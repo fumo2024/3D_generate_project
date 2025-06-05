@@ -1,0 +1,16 @@
+# python
+__pycache__/
+build/
+*.egg-info/
+*.so
+venv_*/
+
+tmp*
+# data
+data/
+
+# models pre-trained
+pretrained/
+
+# jupyter
+.ipynb_checkpoints/
