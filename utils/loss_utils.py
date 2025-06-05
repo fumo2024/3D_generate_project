@@ -1,8 +1,12 @@
-# borrowed from https://github.com/graphdeco-inria/gaussian-splatting/blob/main/utils/loss_utils.py
+# modified from https://github.com/graphdeco-inria/gaussian-splatting/blob/main/utils/loss_utils.py
+
+import os
+import sys
 import torch
 import torch.nn.functional as F
 from torch.autograd import Variable
 from math import exp
+
 try:
     from diff_gaussian_rasterization._C import fusedssim, fusedssim_backward
 except:
@@ -79,3 +83,15 @@ def _ssim(img1, img2, window, window_size, channel, size_average=True):
 def fast_ssim(img1, img2):
     ssim_map = FusedSSIMMap.apply(C1, C2, img1, img2)
     return ssim_map.mean()
+
+if __name__ == "__main__":
+    # 测试代码
+    img1 = torch.rand(1, 3, 256, 256)
+    img2 = torch.rand(1, 3, 256, 256)
+
+    print("L1 Loss:", l1_loss(img1, img2).item())
+    print("L2 Loss:", l2_loss(img1, img2).item())
+    print("SSIM:", ssim(img1, img2).item())
+    print("Fast SSIM:", fast_ssim(img1, img2).item())
+
+
