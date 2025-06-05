@@ -1,0 +1,16 @@
+name: 3D_generate_project
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - cudatoolkit
+  - plyfile
+  - python
+  - pip
+  - pytorch
+  - torchaudio
+  - torchvision
+  - tqdm
+  - pip:
+    - submodules/diff-gaussian-rasterization

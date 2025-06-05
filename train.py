@@ -1,105 +1,163 @@
 import torch
-import argparse
-import os
-from tqdm import tqdm
+import torch.nn.functional as F
+import torchvision.transforms as T
+from PIL import Image
 import numpy as np
-from render.gaussian_renderer import GaussianRenderer
-from guidance.zero123_utils import Zero123Generator
-from utils.image_utils import remove_background, pil_to_tensor, resize_image
-from utils.camera_utils import create_camera
+import os
+import yaml
+from guidance.zero123_utils import Zero123
+from gaussian_model import GaussianModel
+from render.gaussian_renderer import render_gaussian  # 假设存在此函数
+from tqdm import tqdm
 
-def train(input_image_path, output_dir, iterations=1000, num_novel_views=10, device="cuda"):
-    # 创建输出目录
-    os.makedirs(output_dir, exist_ok=True)
-    
-    # 初始化模型
-    zero123 = Zero123Generator(device=device)
-    gs_renderer = GaussianRenderer(device=device)
-    
-    # 加载输入图像并移除背景
-    print("Removing background...")
-    bg_removed = remove_background(input_image_path, device=device)
-    bg_removed_path = os.path.join(output_dir, "bg_removed.png")
-    bg_removed.save(bg_removed_path)
-    print(f"Background removed image saved to {bg_removed_path}")
-    
-    # 转换为tensor并调整大小
-    input_tensor = pil_to_tensor(bg_removed, device=device)
-    input_tensor = resize_image(input_tensor, (256, 256))
-    
-    # 使用输入图像初始化3DGS
-    print("Initializing 3D Gaussian model...")
-    gs_renderer.initialize_from_image(input_tensor)
-    gs_renderer.set_optimizer(lr=0.01)
-    
-    # 初始视角相机参数
-    initial_camera = create_camera(0, 0, device=device)
-    
-    # 生成新视角
-    print(f"Generating {num_novel_views} novel views...")
-    novel_views = zero123.generate_novel_views(
-        bg_removed, 
-        num_views=num_novel_views,
-        min_angle=-150,
-        max_angle=150
-    )
-    
-    # 添加初始视角到训练集
-    training_views = [(input_tensor, initial_camera)] + novel_views
-    
-    # 保存生成的视角
-    os.makedirs(os.path.join(output_dir, "generated_views"), exist_ok=True)
-    for i, (image_tensor, camera) in enumerate(novel_views):
-        img = tensor_to_pil(image_tensor)
-        img.save(os.path.join(output_dir, "generated_views", f"view_{i}.png"))
-    
-    # 训练循环
-    print("Starting training...")
-    loss_history = []
-    
-    for i in tqdm(range(iterations), desc="Training"):
-        # 随机选择一个视角进行训练
-        idx = np.random.randint(0, len(training_views))
-        gt_image, camera = training_views[idx]
-        
-        # 执行训练步骤
-        loss = gs_renderer.train_step(camera, gt_image)
-        loss_history.append(loss)
-        
-        # 定期保存进度
-        if i % 100 == 0:
-            tqdm.write(f"Iteration {i}/{iterations}, Loss: {loss:.6f}")
-            
-            # 渲染输入视角用于可视化
-            render_result = gs_renderer.render(initial_camera)
-            render_image = render_result["render"]
-            
-            # 保存渲染结果
-            progress_path = os.path.join(output_dir, f"progress_{i}.png")
-            tensor_to_pil(render_image).save(progress_path)
-    
-    # 保存最终模型
-    model_path = os.path.join(output_dir, "reconstructed_model.ply")
-    gs_renderer.save_model(model_path)
-    print(f"Saved reconstructed model to {model_path}")
-    
-    return loss_history
+def load_input_image(path):
+    image = Image.open(path).convert("RGB")
+    return image
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train 3D Gaussian model from single image")
-    parser.add_argument("--input_image", type=str, required=True, help="Path to input image")
-    parser.add_argument("--output_dir", type=str, default="output", help="Output directory")
-    parser.add_argument("--iterations", type=int, default=1000, help="Number of training iterations")
-    parser.add_argument("--num_novel_views", type=int, default=10, help="Number of novel views to generate")
-    parser.add_argument("--device", type=str, default="cuda", choices=["cuda", "cpu"], help="Device to use")
-    
-    args = parser.parse_args()
-    
-    # 运行训练
-    train(
-        input_image_path=args.input_image,
-        output_dir=args.output_dir,
-        iterations=args.iterations,
-        num_novel_views=args.num_novel_views,
-        device=args.device
+def remove_background(image):
+    # TODO: 根据需求实现背景去除或 alpha 通道处理
+    return image
+
+def generate_points_from_depth(image, device):
+    """
+    基于单目深度估计生成初始点云
+    :param image: PIL.Image 输入图像
+    :param device: 设备
+    :return: dict 包含初始化的点参数
+    """
+    # TODO: 利用预训练单目深度、法线估计模型生成点云坐标和属性
+    # 占位示例生成随机点
+    n_points = 1024
+    points_xyz = torch.randn(n_points,3,device=device)
+    points_scale = torch.ones(n_points,1,device=device)
+    points_alpha = torch.ones(n_points,1,device=device)
+    points_sh = torch.zeros(n_points,9,3,device=device)  # 球谐系数示例
+    points_rot = torch.zeros(n_points,3,device=device)
+    return {
+        "points_xyz": points_xyz,
+        "points_scale": points_scale,
+        "points_alpha": points_alpha,
+        "points_sh": points_sh,
+        "points_rot": points_rot,
+    }
+
+def initialize_on_sphere(device, num_points=1024):
+    """
+    简单的球面均匀采样初始化
+    :param device: Torch 设备
+    :param num_points: 采样点数量
+    :return: 初始化参数字典
+    """
+    points_xyz = torch.randn(num_points, 3, device=device)
+    points_xyz /= points_xyz.norm(dim=-1, keepdim=True)
+    points_scale = torch.ones(num_points, 1, device=device) * 0.1
+    points_alpha = torch.ones(num_points, 1, device=device) * 0.1
+    points_sh = torch.zeros(num_points, 9, 3, device=device)
+    points_rot = torch.zeros(num_points, 3, device=device)
+    return {
+        "points_xyz": points_xyz,
+        "points_scale": points_scale,
+        "points_alpha": points_alpha,
+        "points_sh": points_sh,
+        "points_rot": points_rot,
+    }
+
+def sample_camera_pose(iteration, num_iters):
+    """
+    训练中采样相机随机视角
+    :param iteration: 当前迭代次数
+    :param num_iters: 总迭代次数
+    :return: 4x4 numpy 相机外参矩阵
+    """
+    # TODO: 根据训练需求采样相机视角。临时返回单位矩阵。
+    return np.eye(4)
+
+def add_noise(image: torch.Tensor, t: torch.Tensor):
+    """
+    根据扩散时间步向图像添加噪声
+    :param image: 形状 [1,C,H,W]
+    :param t: 标量时间步 [0,1]
+    :return: noisy_image, noise
+    """
+    noise = torch.randn_like(image)
+    noisy_image = (1 - t) * image + t * noise
+    return noisy_image, noise
+
+def get_timestep_schedule(max_t=1.0, steps=1000):
+    """
+    构造时间步调度表
+    :param max_t: 最大时间步，float
+    :param steps: 总步数，int
+    :return: numpy 数组，线性调度
+    """
+    return np.linspace(0, max_t, steps)
+
+def sample_random_timestep(schedule):
+    t = np.random.choice(schedule)
+    return torch.tensor(t, dtype=torch.float32)
+
+def train(config):
+    device = torch.device(config.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
+
+    # 加载输入图像
+    input_image = load_input_image(config["input_image_path"])
+    input_image = remove_background(input_image)
+
+    # 初始化 3DGS 点云
+    if config.get("use_depth_init", False):
+        params_init = generate_points_from_depth(input_image, device)
+    else:
+        params_init = initialize_on_sphere(device, num_points=config.get("num_init_points", 1024))
+
+    gaussian_model = GaussianModel.create_from_params(params_init, device)
+
+    # 初始化 Zero123 指导模型
+    zero123_guidance = Zero123(
+        config_path = config["zero123_config_path"],
+        checkpoint_path = config["zero123_ckpt_path"],
+        device=device,
     )
+
+    optimizer = torch.optim.Adam(gaussian_model.get_params_to_optimize(), lr=config.get("learning_rate", 7e-3))
+
+    timestep_schedule = get_timestep_schedule(steps=1000)
+    max_iterations = config.get("max_iterations", 30000)
+    densify_interval = config.get("densification_interval", 100)
+    densify_warmup = config.get("densification_warm_up", 500)
+
+    for iteration in tqdm(range(max_iterations)):
+        # 1) 采样随机时间步 t
+        t = sample_random_timestep(timestep_schedule).to(device)
+
+        # 2) 采样随机相机视角
+        cam_pose = sample_camera_pose(iteration, max_iterations)
+
+        # 3) 通过 3DGS 渲染得到图像
+        render_params = gaussian_model.get_point_data_for_rendering()
+        rendered_image = render_gaussian(render_params, cam_pose, device)
+        # rendered_image: Tensor [1,C,H,W], 范围[-1,1] 或 [0,1]，与 Zero123 输入对应
+        
+        # 4) 添加噪声
+        noisy_image, noise = add_noise(rendered_image, t)
+
+        # 5) 计算 SDS 损失
+        predicted_noise = zero123_guidance.predict_noise(input_image, cam_pose, t, noisy_image)
+        sds_loss = F.mse_loss(predicted_noise, noise.detach())
+
+        # 6) 其他损失 (如果有)
+        loss = sds_loss
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        # 7) 动态优化点云（增密、裁剪）
+        if iteration > densify_warmup and iteration % densify_interval == 0:
+            gaussian_model.densify_and_prune(optimizer, iteration)
+
+        # 8) 视需要保存日志、检查点等
+        if (iteration + 1) % config.get("log_interval", 1000) == 0:
+            print(f"[Iter {iteration+1}] SDS Loss: {sds_loss.item():.6f}")
+
+        # TODO: 保存检查点，导出中间结果等
+
