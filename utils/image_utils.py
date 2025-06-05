@@ -1,26 +1,42 @@
 import torch
 import numpy as np
 from PIL import Image
-from carvekit.api.high import HiInterface
 
-def remove_background(image_path, device='cuda'):
-    """移除图像背景"""
-    interface = HiInterface(object_type="object",  # 分割对象
-                            batch_size_seg=1,
-                            batch_size_matting=1,
-                            device=device,
-                            seg_mask_size=640,  # 分割掩码大小
-                            matting_mask_size=2048,
-                            trimap_prob_threshold=231,
-                            trimap_dilation=30,
-                            trimap_erosion_iters=5,
-                            fp16=False)
-    
-    # 处理图像
-    image = Image.open(image_path)
-    image = image.convert('RGB')
-    result = interface([image])
-    return result[0]  # 返回移除背景后的PIL图像
+class BackgroundRemoval:
+    def __init__(self, device='cuda'):
+        from carvekit.api.high import HiInterface
+        self.interface = HiInterface(
+            object_type="object",  # Can be "object" or "hairs-like".
+            batch_size_seg=5,
+            batch_size_matting=1,
+            device=device,
+            seg_mask_size=640,  # Use 640 for Tracer B7 and 320 for U2Net
+            matting_mask_size=2048,
+            trimap_prob_threshold=231,
+            trimap_dilation=30,
+            trimap_erosion_iters=5,
+            fp16=True,
+        )
+
+    @torch.no_grad()
+    def __call__(self, image):
+        # image: [H, W, 3] array in [0, 255] or PIL.Image
+        if isinstance(image, np.ndarray):
+            image = Image.fromarray(image)
+        elif not isinstance(image, Image.Image):
+            raise ValueError("Input must be a numpy array or PIL Image")
+        result = self.interface([image])[0]
+        # 返回 numpy 数组格式
+        return np.array(result)
+
+def remove_background(image, device='cuda'):
+    """
+    a wrapper for BackgroundRemoval
+    image: [H, W, 3] numpy array in [0, 255] or PIL.Image
+    device: 'cuda' or 'cpu'
+    """
+    remover = BackgroundRemoval(device=device)
+    return remover(image)
 
 def pil_to_tensor(image, device='cuda'):
     """将PIL图像转换为PyTorch张量"""

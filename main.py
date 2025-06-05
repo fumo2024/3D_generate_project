@@ -5,7 +5,7 @@ from render.gaussian_renderer import GaussianRenderer
 from utils.camera_utils import create_camera
 from utils.image_utils import tensor_to_pil
 import os
-from PIL import Image
+# from PIL import Image
 
 def main():
     parser = argparse.ArgumentParser(description="3D Reconstruction from Single Image")
