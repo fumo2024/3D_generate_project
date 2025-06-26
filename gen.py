@@ -8,7 +8,7 @@
 #
 # For inquiries contact  george.drettakis@inria.fr
 #
-# Add zero123 to provide SJC loss
+# Add pretrained zero123 to provide SJC loss
 
 import os
 import torch
@@ -194,7 +194,21 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
     for iteration in range(first_iter, opt.iterations + 1):
-        # ... [网络GUI部分保持不变] ...
+        # no change to network-gui part
+        if network_gui.conn == None:
+            network_gui.try_connect()
+        while network_gui.conn != None:
+            try:
+                net_image_bytes = None
+                custom_cam, do_training, pipe.convert_SHs_python, pipe.compute_cov3D_python, keep_alive, scaling_modifer = network_gui.receive()
+                if custom_cam != None:
+                    net_image = render(custom_cam, gaussians, pipe, background, scaling_modifier=scaling_modifer, use_trained_exp=dataset.train_test_exp, separate_sh=SPARSE_ADAM_AVAILABLE)["render"]
+                    net_image_bytes = memoryview((torch.clamp(net_image, min=0, max=1.0) * 255).byte().permute(1, 2, 0).contiguous().cpu().numpy())
+                network_gui.send(net_image_bytes, dataset.source_path)
+                if do_training and ((iteration < int(opt.iterations)) or not keep_alive):
+                    break
+            except Exception as e:
+                network_gui.conn = None
         
         iter_start.record()
 
@@ -205,6 +219,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             gaussians.oneupSHdegree()
 
         # Pick a random Camera
+        #TODO realize information-oriented sampling
         if not viewpoint_stack:
             viewpoint_stack = scene.getTrainCameras().copy()
             viewpoint_indices = list(range(len(viewpoint_stack)))
@@ -230,6 +245,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # ========== 替换为SJC损失计算 ==========
         # 获取当前相机姿态 (需要从viewpoint_cam中提取)
         # 注意: 需要实现从viewpoint_cam到4x4姿态矩阵的转换
+        #TODO fullfill loss computation
         current_pose = get_camera_pose(viewpoint_cam)  # 需要实现此函数
         
         # 计算SJC损失
@@ -269,6 +285,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 scene.save(iteration)
 
             # 致密化
+            #TODO :add steepest 3DGS densification
             if iteration < opt.densify_until_iter:
                 gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
                 gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
@@ -314,7 +331,34 @@ def get_camera_pose(viewpoint_cam):
     pose[:3, 3] = viewpoint_cam.T
     return pose
 
+def prepare_output_and_logger(args):    
+    if not args.model_path:
+        if os.getenv('OAR_JOB_ID'):
+            unique_str=os.getenv('OAR_JOB_ID')
+        else:
+            unique_str = str(uuid.uuid4())
+        args.model_path = os.path.join("./output/", unique_str[0:10])
+        
+    # Set up output folder
+    print("Output folder: {}".format(args.model_path))
+    os.makedirs(args.model_path, exist_ok = True)
+    with open(os.path.join(args.model_path, "cfg_args"), 'w') as cfg_log_f:
+        cfg_log_f.write(str(Namespace(**vars(args))))
+
+    with open(os.path.join(args.model_path, "train_log.txt"), 'w') as log_f:
+        # create & clear the log file
+        pass
+
+    # Create Tensorboard writer
+    tb_writer = None
+    if TENSORBOARD_FOUND:
+        tb_writer = SummaryWriter(args.model_path)
+    else:
+        print("Tensorboard not available: not logging progress")
+    return tb_writer
+
 # ========== 修改训练报告函数 ==========
+#TODO : combine loss and other nessary metrics to report
 def training_report(tb_writer, iteration, loss, elapsed, testing_iterations, scene, renderFunc, renderArgs, train_test_exp):
     if tb_writer:
         tb_writer.add_scalar('train_loss_patches/total_loss', loss.item(), iteration)
