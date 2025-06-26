@@ -43,129 +43,78 @@ try:
 except:
     SPARSE_ADAM_AVAILABLE = False
 
-# ========== 从 run_zero123.py 引入的依赖 ==========
-from einops import rearrange
-from my.config import BaseConf
-from adapt import ScoreAdapter
-from run_img_sampling import SD, StableDiffusion
-from pose import PoseConfig, camera_pose, sample_near_eye
-from my3d import get_T, depth_smooth_loss
-from misc import torch_samps_to_imgs
+# modules about zero123 
+import torchvision.transforms as T
+from zero123_utils import Zero123
 
-device_glb = torch.device("cuda")
-
-# Zero123 模型配置
-class Zero123Config(BaseConf):
-    sd: SD = SD(
-        variant="objaverse",
-        scale=100.0
+# initialize Zero123
+def init_zero123_model(device, config_path, ckpt_path, fp16=True, vram_O=False):
+    # 创建虚拟的opt对象，包含zero123需要的参数
+    class Opt:
+        def __init__(self):
+            self.zero123_grad_scale = 'angle'
+    
+    opt = Opt()
+    
+    zero123_model = Zero123(
+        device=device,
+        fp16=fp16,
+        config=config_path,
+        ckpt=ckpt_path,
+        vram_O=vram_O,
+        t_range=[0.02, 0.98],
+        opt=opt
     )
-    emptiness_scale: int = 10
-    emptiness_weight: int = 0
-    emptiness_step: float = 0.5
-    emptiness_multiplier: float = 20.0
-    depth_smooth_weight: float = 1e5
-    near_view_weight: float = 1e5
-    view_weight: int = 10000
-    var_red: bool = True
+    return zero123_model
 
-# 初始化 Zero123 模型
-def init_zero123_model(config):
-    model = config.sd.make()
-    model = model.to(device_glb)
-    return model
+# obtain pose parameters for camera
+def get_camera_params(viewpoint_cam, input_pose):
+    """
+    计算当前相机相对于输入视图的delta姿态参数
+    返回: (delta_polar, delta_azimuth, delta_radius)
+    """
+    # 简化实现 - 实际中需要根据相机参数计算
+    # 这里假设viewpoint_cam包含我们需要的角度信息
+    return (
+        viewpoint_cam.polar - input_pose['polar'],
+        viewpoint_cam.azimuth - input_pose['azimuth'],
+        viewpoint_cam.radius - input_pose['radius']
+    )
 
-# 计算 SJC 损失
-def compute_sjc_loss(model, render_image, depth_map, input_im, input_pose, current_pose):
-    """
-    计算 SJC 损失，包括:
-    - 去噪损失
-    - 空性损失
-    - 深度平滑损失
-    - 近视图一致性损失
-    """
-    # 获取相对变换矩阵 T
-    T_target = current_pose[:3, -1]
-    T_cond = input_pose[:3, -1]
-    T = get_T(T_target, T_cond).to(model.device)
-    
-    # 准备输入图像
-    H, W = render_image.shape[2], render_image.shape[3]
-    target_H, target_W = model.data_shape()[1:]
-    
-    # 调整渲染图像尺寸
-    if not isinstance(model, StableDiffusion):
-        y = torch.nn.functional.interpolate(render_image, (target_H, target_W), mode='bilinear')
-    else:
-        y = render_image
-    
-    # 选择噪声级别
-    ts = model.us[30:-10]
-    chosen_σs = np.random.choice(ts, 1, replace=False)
-    chosen_σs = chosen_σs.reshape(-1, 1, 1, 1)
-    chosen_σs = torch.as_tensor(chosen_σs, device=model.device, dtype=torch.float32)
-    
-    # 添加噪声
-    noise = torch.randn(1, *y.shape[1:], device=model.device)
-    zs = y + chosen_σs * noise
-    
-    # 获取条件嵌入
-    score_conds = model.img_emb(input_im, conditioning_key='hybrid', T=T)
-    
-    # 去噪
-    Ds = model.denoise_objaverse(zs, chosen_σs, score_conds)
-    
-    # 计算梯度 (SJC损失的核心)
-    if config.var_red:
-        grad = (Ds - y) / chosen_σs
-    else:
-        grad = (Ds - zs) / chosen_σs
-    
-    # 主要损失项
-    sjc_loss = -torch.mean(grad * y)
-    
-    # 空性损失 (从原始SJC代码中提取)
-    # 注意: 3DGS中没有显式权重，需调整
-    # emptiness_loss = (torch.log(1 + config.emptiness_scale * ws) * (-1 / 2 * ws)).mean()
-    # emptiness_loss = config.emptiness_weight * emptiness_loss
-    
-    # 深度平滑损失
-    depth_smooth_loss_val = depth_smooth_loss(depth_map) * config.depth_smooth_weight
-    
-    # 近视图一致性损失 (可选)
-    # 需渲染额外视图，计算量大
-    # near_view_loss = 0
-    
-    total_loss = sjc_loss + depth_smooth_loss_val
-    
-    return total_loss, {
-        "sjc": sjc_loss.item(),
-        "depth_smooth": depth_smooth_loss_val.item()
-    }
 
 # 主训练函数
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
     # ========== Zero123 初始化 ==========
-    sjc_config = Zero123Config()
-    zero123_model = init_zero123_model(sjc_config)
+    device = torch.device("cuda")
+    zero123_config_path = "./pretrained/sd-objaverse-finetune-c_concat-256.yaml"
+    zero123_ckpt_path = "./pretrained/zero123-xl.ckpt"
+    zero123_model = init_zero123_model(device, zero123_config_path, zero123_ckpt_path)
     
     # 加载输入视图 (条件图像)
-    # 注意: 需要根据实际数据集调整
-    input_im = load_input_view(dataset.source_path)  # 需实现此函数
-    input_pose = np.eye(4)  # 需要实际的输入姿态
+    input_im = load_input_view(dataset.source_path)
     
-    # 设置模型条件
+    # 获取输入视图的条件嵌入
     with torch.no_grad():
-        tforms = transforms.Compose([
-            transforms.Resize(256),
-            transforms.CenterCrop((256, 256))
-        ])
-        cond_im = tforms(input_im)
-        zero123_model.clip_emb = zero123_model.model.get_learned_conditioning(cond_im.float()).tile(1,1,1).detach()
-        zero123_model.vae_emb = zero123_model.model.encode_first_stage(cond_im.float()).mode().detach()
+        c_crossattn, c_concat = zero123_model.get_img_embeds(input_im)
+        embeddings = {
+            'c_crossattn': c_crossattn,
+            'c_concat': c_concat,
+            'ref_polars': [0],  # 参考polar角度
+            'ref_azimuths': [0], # 参考azimuth角度
+            'ref_radii': [0],    # 参考半径
+            'zero123_ws': [1.0]  # 权重
+        }
     
+    # 输入视图的相机参数 (简化)
+    input_pose = {
+        'polar': 0,
+        'azimuth': 0,
+        'radius': 0
+    }
+
     # ========== 原始3DGS初始化 ==========
     if not SPARSE_ADAM_AVAILABLE and opt.optimizer_type == "sparse_adam":
+        # I did not test this, its functionality is due on the original 3DGS code base 
         sys.exit(f"Trying to use sparse adam but it is not installed, please install the correct rasterizer using pip install [3dgs_accel].")
 
     first_iter = 0
@@ -219,7 +168,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             gaussians.oneupSHdegree()
 
         # Pick a random Camera
-        #TODO realize information-oriented sampling
+        #TODO realize information-oriented sampling, maybe powers sampling efficiency
         if not viewpoint_stack:
             viewpoint_stack = scene.getTrainCameras().copy()
             viewpoint_indices = list(range(len(viewpoint_stack)))
@@ -242,24 +191,26 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             render_pkg["radii"]
         )
         
-        # ========== 替换为SJC损失计算 ==========
-        # 获取当前相机姿态 (需要从viewpoint_cam中提取)
-        # 注意: 需要实现从viewpoint_cam到4x4姿态矩阵的转换
+        # use zero123 to compute guided loss
         #TODO fullfill loss computation
-        current_pose = get_camera_pose(viewpoint_cam)  # 需要实现此函数
-        
-        # 计算SJC损失
-        sjc_loss, loss_components = compute_sjc_loss(
-            model=zero123_model,
-            render_image=image.unsqueeze(0),  # 添加批次维度
-            depth_map=depth,
-            input_im=input_im,
-            input_pose=input_pose,
-            current_pose=current_pose
+        # obtain camera parameters for the current viewpoint
+        delta_polar, delta_azimuth, delta_radius = get_camera_params(viewpoint_cam, input_pose)
+
+        # preprocess the image for zero123
+        pred_rgb = image.unsqueeze(0)  # 添加批次维度 [1, 3, H, W]
+        pred_rgb = pred_rgb.clamp(0, 1)  # 确保在[0,1]范围
+
+        # compute zero123 loss
+        loss = zero123_model.train_step(
+            embeddings=embeddings,
+            pred_rgb=pred_rgb,
+            polar=delta_polar,
+            azimuth=delta_azimuth,
+            radius=delta_radius,
+            guidance_scale=3,
+            as_latent=False,
+            grad_scale=1
         )
-        
-        # 总损失
-        loss = sjc_loss
         
         # 反向传播
         loss.backward()
@@ -311,25 +262,19 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
 
-# 需要实现的辅助函数
+# utils
 def load_input_view(source_path):
     """加载输入视图作为条件图像"""
-    # 实现取决于数据集结构
-    # 示例: 从固定路径加载图像
     from PIL import Image
-    import torchvision.transforms as T
-    img = Image.open(os.path.join(source_path, "input_view.png")).convert("RGB")
-    transform = T.Compose([T.Resize(256), T.CenterCrop(256), T.ToTensor()])
-    return transform(img).unsqueeze(0).to(device_glb) * 2 - 1
+    input_path = os.path.join(source_path, "input.png")
+    img = Image.open(input_path).convert("RGB")
 
-def get_camera_pose(viewpoint_cam):
-    """从ViewpointCamera对象提取4x4姿态矩阵"""
-    # 需要根据3DGS的相机表示实现
-    # 示例: 假设viewpoint_cam包含旋转和平移
-    pose = np.eye(4)
-    pose[:3, :3] = viewpoint_cam.R
-    pose[:3, 3] = viewpoint_cam.T
-    return pose
+    transform = T.Compose([
+        T.Resize(256),
+        T.CenterCrop(256),
+        T.ToTensor()
+    ])
+    return transform(img).unsqueeze(0).to(device)
 
 def prepare_output_and_logger(args):    
     if not args.model_path:
@@ -357,7 +302,7 @@ def prepare_output_and_logger(args):
         print("Tensorboard not available: not logging progress")
     return tb_writer
 
-# ========== 修改训练报告函数 ==========
+# ========== 训练报告函数 ==========
 #TODO : combine loss and other nessary metrics to report
 def training_report(tb_writer, iteration, loss, elapsed, testing_iterations, scene, renderFunc, renderArgs, train_test_exp):
     if tb_writer:
@@ -388,7 +333,7 @@ def training_report(tb_writer, iteration, loss, elapsed, testing_iterations, sce
         torch.cuda.empty_cache()
 
 if __name__ == "__main__":
-    # ... [参数解析部分保持不变] ...
+    # parse command line arguments
     parser = ArgumentParser(description="Training script parameters")
     lp = ModelParams(parser)
     op = OptimizationParams(parser)
