@@ -320,8 +320,8 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('input', type=str)
-    # parser.add_argument('--fp16', action='store_true', help="use float16 for training") # no use now, can only run in fp32
+    parser.add_argument('--input', type=str)
+    parser.add_argument('--fp16', action='store_true', help="use float16 for training") # no use now, can only run in fp32
 
     parser.add_argument('--polar', type=float, default=0, help='delta polar angle in [-90, 90]')
     parser.add_argument('--azimuth', type=float, default=0, help='delta azimuth angle in [-180, 180]')

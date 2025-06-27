@@ -21,7 +21,7 @@ running the code needs some dependencies, you can install them with the followin
 pip install torch==1.12.1+cu116 torchvision==0.13.1+cu116 torchaudio==0.12.1 --extra-index-url https://download.pytorch.org/whl/cu116
 conda install nvidia/label/cuda-11.8.0::cuda # optional, for nvcc toolkits
 ```
-You also need to install two customized packages `diff-gaussian-rasterization` and `simple-knn`:
+You also need to install two customized packages `diff-gaussian-rasterization`, `simple-knn` and `latent-diffusion`:
 ```bash
 # remember to specify the cuda library path if some cuda header is missing
 cd submodules/diff-gaussian-rasterization
@@ -29,6 +29,10 @@ pip install -e .
 
 # remember to specify the cuda library path if some cuda header is missing
 cd submodules/simple-knn
+pip install -e .
+
+# install latent-diffusion, which is used for setting zero123 model
+cd submodules/latent-diffusion
 pip install -e .
 ```
 ### Install Zero123
