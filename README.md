@@ -61,4 +61,4 @@ This project is built based on many excellent open-source projects, which not on
 | Gaussian Splatting Colab | [https://github.com/camenduru/gaussian-splatting-colab](https://github.com/camenduru/gaussian-splatting-colab) |
 | Stable DreamFusion | [https://github.com/ashawkey/stable-dreamfusion](https://github.com/ashawkey/stable-dreamfusion) |
 | Diffusers | [https://github.com/huggingface/diffusers](https://github.com/huggingface/diffusers) |
-- ...
+|... | ... |
