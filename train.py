@@ -47,10 +47,10 @@ except:
 import torchvision.transforms as T
 from zero123_utils import Zero123, load_model_from_config
 import torch.nn.functional as F
+import cv2
 
-# initialize Zero123
+# 初始化Zero123模型
 def init_zero123_model(device, config_path, ckpt_path, fp16=True, vram_O=False):
-    # 创建虚拟的opt对象，包含zero123需要的参数
     class Opt:
         def __init__(self):
             self.zero123_grad_scale = 'angle'
@@ -68,20 +68,53 @@ def init_zero123_model(device, config_path, ckpt_path, fp16=True, vram_O=False):
     )
     return zero123_model
 
-# obtain pose parameters for camera
-def get_camera_params(viewpoint_cam, input_pose):
-    """
-    计算当前相机相对于输入视图的delta姿态参数
-    返回: (delta_polar, delta_azimuth, delta_radius)
-    """
-    # 简化实现 - 实际中需要根据相机参数计算
-    # 这里假设viewpoint_cam包含我们需要的角度信息
-    return (
-        viewpoint_cam.polar - input_pose['polar'],
-        viewpoint_cam.azimuth - input_pose['azimuth'],
-        viewpoint_cam.radius - input_pose['radius']
-    )
-
+# process input image, the same as preprocess.py
+def process_input_image(img_path, size=256, border_ratio=0.2, recenter=True):
+    # 读取图像
+    image = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
+    if image is None:
+        raise FileNotFoundError(f"Failed to load image at {img_path}")
+    
+    # 分离alpha通道
+    if image.shape[-1] == 4:
+        rgba = image.astype(np.float32) / 255.0
+        rgb = rgba[..., :3]
+        alpha = rgba[..., 3:]
+        # 白底处理
+        rgb = rgb * alpha + (1 - alpha)  # 背景为白色
+        image = (rgb * 255).astype(np.uint8)
+    else:
+        image = image[..., :3]
+    
+    # 居中处理
+    if recenter:
+        # 创建二值掩码
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        _, mask = cv2.threshold(gray, 1, 255, cv2.THRESH_BINARY)
+        
+        # 找到物体边界
+        coords = cv2.findNonZero(mask)
+        if coords is None:
+            return cv2.resize(image, (size, size))
+        
+        x, y, w, h = cv2.boundingRect(coords)
+        
+        # 计算缩放比例
+        desired_size = int(size * (1 - border_ratio))
+        scale = desired_size / max(h, w)
+        h2 = int(h * scale)
+        w2 = int(w * scale)
+        
+        # 计算新位置
+        x2 = (size - w2) // 2
+        y2 = (size - h2) // 2
+        
+        # 创建新图像并居中放置物体
+        result = np.zeros((size, size, 3), dtype=np.uint8)
+        result[y2:y2+h2, x2:x2+w2] = cv2.resize(image[y:y+h, x:x+w], (w2, h2))
+        return result
+    else:
+        return cv2.resize(image, (size, size))
 
 # 主训练函数
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
@@ -91,8 +124,13 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     zero123_ckpt_path = "./pretrained/zero123-xl.ckpt"
     zero123_model = init_zero123_model(device, zero123_config_path, zero123_ckpt_path)
     
-    # 加载输入视图 (条件图像)
-    input_im = load_input_view(dataset.source_path)
+    # 加载输入视图 (条件图像) - 使用preprocess.py处理后的图像
+    input_path = os.path.join(dataset.source_path, "input_rgba.png")
+    processed_img = process_input_image(input_path, size=256, border_ratio=0.2, recenter=True)
+    
+    # 转换为PyTorch Tensor
+    processed_img = cv2.cvtColor(processed_img, cv2.COLOR_BGR2RGB)
+    input_im = torch.from_numpy(processed_img.astype(np.float32) / 255.0).permute(2, 0, 1).unsqueeze(0).to(device)
     
     # 获取输入视图的条件嵌入
     with torch.no_grad():
@@ -115,7 +153,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
     # ========== 原始3DGS初始化 ==========
     if not SPARSE_ADAM_AVAILABLE and opt.optimizer_type == "sparse_adam":
-        # did not test this, its functionality is due on the original 3DGS code base 
         sys.exit(f"Trying to use sparse adam but it is not installed, please install the correct rasterizer using pip install [3dgs_accel].")
 
     first_iter = 0
@@ -169,7 +206,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             gaussians.oneupSHdegree()
 
         # Pick a random Camera
-        #TODO realize information-oriented sampling, may powers sampling efficiency
         if not viewpoint_stack:
             viewpoint_stack = scene.getTrainCameras().copy()
             viewpoint_indices = list(range(len(viewpoint_stack)))
@@ -192,35 +228,46 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             render_pkg["radii"]
         )
         
-        # use zero123 to compute guided loss
-        #TODO fullfill loss computation
-        # obtain camera parameters for the current viewpoint
-        delta_polar, delta_azimuth, delta_radius = get_camera_params(viewpoint_cam, input_pose)
-
-        # preprocess the image for zero123
-        pred_rgb = image.unsqueeze(0)  # 添加批次维度 [1, 3, H, W]
-        pred_rgb = pred_rgb.clamp(0, 1)  # 确保在[0,1]范围
-
-        # compute zero123 loss
-        loss = zero123_model.train_step(
+        # ========== Zero123损失计算 ==========
+        # 获取当前相机相对于输入视图的delta姿态
+        # 注意：这里需要根据实际相机参数计算，以下为示例
+        delta_polar = viewpoint_cam.polar  # 实际应根据输入视图调整
+        delta_azimuth = viewpoint_cam.azimuth
+        delta_radius = viewpoint_cam.radius
+        
+        # 预处理渲染图像 (添加批次维度并归一化)
+        pred_rgb = image.unsqueeze(0)  # [1, 3, H, W]
+        pred_rgb = torch.clamp(pred_rgb, 0, 1)  # 确保在[0,1]范围
+        
+        # 计算zero123损失
+        zero123_loss = zero123_model.train_step(
             embeddings=embeddings,
             pred_rgb=pred_rgb,
-            polar=delta_polar,
-            azimuth=delta_azimuth,
-            radius=delta_radius,
-            guidance_scale=3,
+            polar=[delta_polar],
+            azimuth=[delta_azimuth],
+            radius=[delta_radius],
+            guidance_scale=opt.guidance_scale,
             as_latent=False,
             grad_scale=1
         )
         
+        # ========== 组合损失 ==========
+        # 添加原始L1损失（可选）
+        if input_im is not None and viewpoint_cam.is_input_view:
+            gt_image = input_im  # 输入视图作为GT
+            l1_loss_value = l1_loss(pred_rgb, gt_image)
+            total_loss = zero123_loss + l1_loss_value
+        else:
+            total_loss = zero123_loss
+        
         # 反向传播
-        loss.backward()
+        total_loss.backward()
 
         iter_end.record()
 
         with torch.no_grad():
             # 更新进度条
-            ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
+            ema_loss_for_log = 0.4 * total_loss.item() + 0.6 * ema_loss_for_log
             progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.{7}f}"})
             progress_bar.update(1)
             
@@ -228,7 +275,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 progress_bar.close()
 
             # 日志和保存
-            training_report(tb_writer, iteration, loss, iter_start.elapsed_time(iter_end), 
+            training_report(tb_writer, iteration, total_loss, iter_start.elapsed_time(iter_end), 
                            testing_iterations, scene, render, (pipe, background, 1., SPARSE_ADAM_AVAILABLE, None, dataset.train_test_exp), 
                            dataset.train_test_exp)
             
@@ -237,7 +284,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 scene.save(iteration)
 
             # 致密化
-            #TODO :add steepest 3DGS densification
             if iteration < opt.densify_until_iter:
                 gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
                 gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
@@ -263,20 +309,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
 
-# utils
-def load_input_view(source_path):
-    """加载输入视图作为条件图像"""
-    from PIL import Image
-    input_path = os.path.join(source_path, "input.png")
-    img = Image.open(input_path).convert("RGB")
-
-    transform = T.Compose([
-        T.Resize(256),
-        T.CenterCrop(256),
-        T.ToTensor()
-    ])
-    return transform(img).unsqueeze(0).to(device)
-
+# 准备输出和日志
 def prepare_output_and_logger(args):    
     if not args.model_path:
         if os.getenv('OAR_JOB_ID'):
@@ -303,8 +336,7 @@ def prepare_output_and_logger(args):
         print("Tensorboard not available: not logging progress")
     return tb_writer
 
-# ========== 训练报告函数 ==========
-#TODO : combine loss and other nessary metrics to report
+# 训练报告
 def training_report(tb_writer, iteration, loss, elapsed, testing_iterations, scene, renderFunc, renderArgs, train_test_exp):
     if tb_writer:
         tb_writer.add_scalar('train_loss_patches/total_loss', loss.item(), iteration)

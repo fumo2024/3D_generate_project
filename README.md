@@ -66,6 +66,7 @@ This project is built based on many excellent open-source projects, which not on
 | 3DGS | [https://github.com/graphdeco-inria/gaussian-splatting](https://github.com/graphdeco-inria/gaussian-splatting) |
 | SteepGS | [https://github.com/facebookresearch/SteepGS](https://github.com/facebookresearch/SteepGS) |
 | Zero123 | [https://github.com/cvlab-columbia/zero123](https://github.com/cvlab-columbia/zero123) |
+| DreamGaussian | [https://github.com/dreamgaussian/dreamgaussian](https://github.com/dreamgaussian/dreamgaussian) |
 | Gaussian Splatting Colab | [https://github.com/camenduru/gaussian-splatting-colab](https://github.com/camenduru/gaussian-splatting-colab) |
 | Stable DreamFusion | [https://github.com/ashawkey/stable-dreamfusion](https://github.com/ashawkey/stable-dreamfusion) |
 | Diffusers | [https://github.com/huggingface/diffusers](https://github.com/huggingface/diffusers) |
