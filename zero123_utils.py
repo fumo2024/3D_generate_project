@@ -15,7 +15,8 @@ import torch.nn.functional as F
 from torch.cuda.amp import custom_bwd, custom_fwd
 from torchvision.utils import save_image
 
-from diffusers import DDIMScheduler
+# unusable because of diffusers need python3.9 which is not compatible with the current environment
+# from diffusers import DDIMScheduler
 
 import sys
 from os import path
@@ -73,6 +74,41 @@ def load_model_from_config(config, ckpt, device, vram_O=False, verbose=False):
 
     return model
 
+# 替代diffusers的DDIMScheduler
+class SimpleDDIMScheduler:
+    def __init__(self, timesteps, linear_start, linear_end):
+        self.timesteps = timesteps
+        self.alphas = self._create_alphas(linear_start, linear_end)
+        self.alphas_cumprod = torch.cumprod(self.alphas, dim=0)
+    
+    def _create_alphas(self, start, end):
+        return torch.linspace(start, end, self.timesteps)
+    
+    def add_noise(self, original, noise, timestep):
+        sqrt_alpha = torch.sqrt(self.alphas_cumprod[timestep])
+        sqrt_one_minus_alpha = torch.sqrt(1 - self.alphas_cumprod[timestep])
+        return sqrt_alpha * original + sqrt_one_minus_alpha * noise
+    
+    def step(self, noise_pred, timestep, sample, eta=1.0):
+        # 简化的DDIM步骤实现
+        prev_timestep = timestep - self.timesteps // 50
+        alpha_prod_t = self.alphas_cumprod[timestep]
+        alpha_prod_t_prev = self.alphas_cumprod[prev_timestep] if prev_timestep >= 0 else 1.0
+        
+        pred_original = (sample - torch.sqrt(1 - alpha_prod_t) * noise_pred) / torch.sqrt(alpha_prod_t)
+        
+        variance = (1 - alpha_prod_t_prev) / (1 - alpha_prod_t)
+        std_dev = eta * torch.sqrt(variance)
+        
+        noise = torch.randn_like(sample)
+        prev_sample = (
+            torch.sqrt(alpha_prod_t_prev) * pred_original +
+            torch.sqrt(1 - alpha_prod_t_prev - std_dev**2) * noise_pred +
+            std_dev * noise
+        )
+        
+        return {'prev_sample': prev_sample}
+
 class Zero123(nn.Module):
     def __init__(self, device, fp16,
                  config='./pretrained/sd-objaverse-finetune-c_concat-256.yaml',
@@ -92,14 +128,10 @@ class Zero123(nn.Module):
         # timesteps: use diffuser for convenience... hope it's alright.
         self.num_train_timesteps = self.config.model.params.timesteps
 
-        self.scheduler = DDIMScheduler(
+        self.scheduler = SimpleDDIMScheduler(
             self.num_train_timesteps,
             self.config.model.params.linear_start,
             self.config.model.params.linear_end,
-            beta_schedule='scaled_linear',
-            clip_sample=False,
-            set_alpha_to_one=False,
-            steps_offset=1,
         )
 
         self.min_step = int(self.num_train_timesteps * t_range[0])

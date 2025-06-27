@@ -45,7 +45,8 @@ except:
 
 # modules about zero123 
 import torchvision.transforms as T
-from zero123_utils import Zero123
+from zero123_utils import Zero123, load_model_from_config
+import torch.nn.functional as F
 
 # initialize Zero123
 def init_zero123_model(device, config_path, ckpt_path, fp16=True, vram_O=False):
@@ -114,7 +115,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
     # ========== 原始3DGS初始化 ==========
     if not SPARSE_ADAM_AVAILABLE and opt.optimizer_type == "sparse_adam":
-        # I did not test this, its functionality is due on the original 3DGS code base 
+        # did not test this, its functionality is due on the original 3DGS code base 
         sys.exit(f"Trying to use sparse adam but it is not installed, please install the correct rasterizer using pip install [3dgs_accel].")
 
     first_iter = 0
@@ -348,6 +349,9 @@ if __name__ == "__main__":
     parser.add_argument('--disable_viewer', action='store_true', default=False)
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default = None)
+
+    parser.add_argument("--guidance_scale", type=float, default=3.0, help="zero123 guidance scale")
+    parser.add_argument("--zero123_grad_scale", type=str, default="angle", help="zero123 gradient scale type, can be 'angle' or 'radius'")
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
     
