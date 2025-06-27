@@ -43,5 +43,20 @@ I use the 105000 iteration checkpoint, under the observations that checkpoints t
 The data downloading and processing are the same with the original 3DGS. Please refer to [here](https://github.com/graphdeco-inria/gaussian-splatting?tab=readme-ov-file#running) for more details. If you want to run SteepGS on your own dataset, please refer to [here](https://github.com/graphdeco-inria/gaussian-splatting?tab=readme-ov-file#processing-your-own-scenes) for the instructions.
 
 ## Running 
-the overalla 
+after the data preparation and environment setup, if everything works right, the following command should give you the 3DGS model result:
+```bash
+python train.py -s <path to COLMAP dataset>
+```
 
+## Visualization
+I have planned to set up a web interface for visualization, like in [this project](https://github.com/camenduru/gaussian-splatting-colab), it's not done anyway.
+
+## Acknowledgements
+This project is built based on many excellent open-source projects, which not only provide the code, but also the inspiration and ideas, they include:
+- [3DGS](https://github.com/graphdeco-inria/gaussian-splatting)
+- [SteepGS](https://github.com/facebookresearch/SteepGS)
+- [Zero123](https://github.com/cvlab-columbia/zero123)
+- [Gaussian Splatting Colab](https://github.com/camenduru/gaussian-splatting-colab)
+- [Stable DreamFusion](https://github.com/ashawkey/stable-dreamfusion)
+- [Diffusers](https://github.com/huggingface/diffusers)
+- ...
