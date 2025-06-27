@@ -66,6 +66,4 @@ model:
           target: torch.nn.Identity
 
     cond_stage_config:
-      target: ldm.modules.encoders.modules.FrozenClipImageEmbedder
-      params:
-        model: "ViT-L/14"
+      target: ldm.modules.encoders.modules.FrozenCLIPImageEmbedder
