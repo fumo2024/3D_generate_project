@@ -144,7 +144,10 @@ class Zero123(nn.Module):
         x = x * 2 - 1
         c = [self.model.get_learned_conditioning(xx.unsqueeze(0)) for xx in x] #.tile(n_samples, 1, 1)
         v = [self.model.encode_first_stage(xx.unsqueeze(0)).mode() for xx in x]
-        return c, v
+        return {
+            "c_crossattn": torch.stack(c, dim=0).to(self.device),  # [B, 77, 768]
+            "c_concat": torch.stack(v, dim=0).to(self.device),  # [B, 4, 32, 32],  # [B, C, H, W]
+        }
 
     def angle_between(self, sph_v1, sph_v2):
         def sph2cart(sv):
