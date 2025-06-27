@@ -140,14 +140,11 @@ class Zero123(nn.Module):
 
     @torch.no_grad()
     def get_img_embeds(self, x):
-        # x: image tensor [B, 3, 256, 256] in [0, 1]
+        # x: image tensor [1, 3, 256, 256] in [0, 1]
         x = x * 2 - 1
         c = [self.model.get_learned_conditioning(xx.unsqueeze(0)) for xx in x] #.tile(n_samples, 1, 1)
         v = [self.model.encode_first_stage(xx.unsqueeze(0)).mode() for xx in x]
-        return {
-            "c_crossattn": torch.stack(c, dim=0).to(self.device),  # [B, 77, 768]
-            "c_concat": torch.stack(v, dim=0).to(self.device),  # [B, 4, 32, 32],  # [B, C, H, W]
-        }
+        return c,v
 
     def angle_between(self, sph_v1, sph_v2):
         def sph2cart(sv):
@@ -271,7 +268,11 @@ class Zero123(nn.Module):
         ):
 
         if c_crossattn is None:
-            embeddings = self.get_img_embeds(image)
+            c,v = self.get_img_embeds(image)
+            embeddings = {
+                'c_crossattn': torch.stack(c, dim=0).to(self.device),
+                'c_concat': torch.stack(v, dim=0).to(self.device)
+            }
 
         T = torch.tensor([math.radians(polar), math.sin(math.radians(azimuth)), math.cos(math.radians(azimuth)), radius])
         T = T[None, None, :].to(self.device)
